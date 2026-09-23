@@ -8,6 +8,7 @@
 	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
 	import { containerMatchesSearch } from '$lib/utils/container-search-core';
+	import { readStatusFilterParam, writeStatusFilterParam } from '$lib/utils/status-filter-param';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Select from '$lib/components/ui/select';
@@ -256,7 +257,6 @@
 	const STATUS_FILTER_STORAGE_KEY = 'dockhand-containers-status-filter';
 	const UPDATE_AVAILABLE_FILTER_VALUE = 'update-available';
 	const NEWER_VERSION_FILTER_VALUE = 'newer-version';
-	let statusFilter = $state<string[]>([]);
 
 	// Status types with icons for filter and table
 	const statusTypes = [
@@ -268,6 +268,18 @@
 		{ value: 'dead', label: 'Dead', icon: Skull, color: 'text-gray-500' }
 	];
 
+	// Seeded synchronously from ?status= (else the saved filter), not in onMount: the
+	// save and URL sync effects run before onMount, so an empty initial value would
+	// overwrite the saved filter and strip the param off a shared link.
+	const STATUS_FILTER_VALUES = [
+		...statusTypes.map((s) => s.value),
+		UPDATE_AVAILABLE_FILTER_VALUE,
+		NEWER_VERSION_FILTER_VALUE
+	];
+	let statusFilter = $state<string[]>(
+		readStatusFilterParam($page.url.searchParams, STATUS_FILTER_VALUES) ?? loadStatusFilter()
+	);
+
 	function getStatusIcon(state: string) {
 		const status = statusTypes.find(s => s.value === state.toLowerCase());
 		return status?.icon || Square;
@@ -278,16 +290,13 @@
 		return status?.color || 'text-muted-foreground';
 	}
 
-	function loadStatusFilter() {
-		if (typeof window !== 'undefined') {
-			const saved = localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
-			if (saved) {
-				try {
-					statusFilter = JSON.parse(saved);
-				} catch {
-					statusFilter = [];
-				}
-			}
+	function loadStatusFilter(): string[] {
+		if (typeof window === 'undefined') return [];
+		try {
+			const saved = JSON.parse(localStorage.getItem(STATUS_FILTER_STORAGE_KEY) ?? '[]');
+			return Array.isArray(saved) ? saved : [];
+		} catch {
+			return [];
 		}
 	}
 
@@ -303,13 +312,15 @@
 		saveStatusFilter();
 	});
 
-	// Sync search query to URL for persistence across navigation
+	// Sync search query and status filter to URL for persistence across navigation.
+	// One effect, so both land in a single goto instead of racing each other.
 	$effect(() => {
 		const q = searchQuery;
 		const url = new URL($page.url);
 		if (q) url.searchParams.set('search', q);
 		else url.searchParams.delete('search');
 		url.searchParams.delete('image'); // clean up legacy param
+		writeStatusFilterParam(url.searchParams, statusFilter);
 		if (url.toString() !== $page.url.toString()) {
 			goto(url.toString(), { replaceState: true, noScroll: true, keepFocus: true });
 		}
@@ -498,8 +509,11 @@
 
 	// Drop the 'update-available' filter when no pending updates remain —
 	// otherwise the user has no way to deselect it (dropdown hides the
-	// entry) and the list stays empty (#1063).
+	// entry) and the list stays empty (#1063). Wait for the pending-updates
+	// fetch first, or a reload (or a ?status=update-available link) drops the
+	// filter before the updates it matches have arrived.
 	$effect(() => {
+		if (!$containerStore.pendingUpdatesLoaded) return;
 		if (
 			statusFilter.includes(UPDATE_AVAILABLE_FILTER_VALUE) &&
 			containersWithUpdatesSet.size === 0
@@ -1492,7 +1506,6 @@
 
 	onMount(async () => {
 		loadLayoutMode();
-		loadStatusFilter();
 		terminalCustomUsers = getCustomUsers();
 
 		// Load persisted pending updates from database

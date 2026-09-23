@@ -17,6 +17,7 @@
 	import { Play, Square, Trash2, Plus, ArrowBigDown, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical, Globe, CircleArrowUp, NotepadText, Tag, Copy, Check } from 'lucide-svelte';
 	import { formatPorts } from '$lib/utils/port-format';
 	import { parseCustomUrl } from '$lib/utils/custom-url';
+	import { readStatusFilterParam, writeStatusFilterParam } from '$lib/utils/status-filter-param';
 	import { extractTraefikUrls } from '$lib/utils/traefik-urls';
 	import { resolveChangelogUrl } from '$lib/utils/changelog-url';
 	import { extractPangolinUrls } from '$lib/utils/pangolin-urls';
@@ -479,7 +480,6 @@
 
 	// Status filter state
 	const STATUS_FILTER_STORAGE_KEY = 'dockhand-stacks-status-filter';
-	let statusFilter = $state<string[]>([]);
 
 	// Stack status types with icons and colors
 	const stackStatusTypes = [
@@ -491,22 +491,25 @@
 		{ value: 'not deployed', label: 'Not deployed', icon: Rocket, color: 'text-violet-500' }
 	];
 
+	// Seeded synchronously from ?status= (else the saved filter), not in onMount: the
+	// save and URL sync effects run before onMount, so an empty initial value would
+	// overwrite the saved filter and strip the param off a shared link.
+	let statusFilter = $state<string[]>(
+		readStatusFilterParam($page.url.searchParams, stackStatusTypes.map((s) => s.value))
+			?? loadStatusFilter()
+	);
+
 	function getStackStatusIcon(status: string) {
 		const s = stackStatusTypes.find(t => t.value === status.toLowerCase());
 		return s?.icon || Layers;
 	}
 
-	function loadStatusFilter() {
+	function loadStatusFilter(): string[] {
 		try {
-			const stored = localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
-			if (stored) {
-				const parsed = JSON.parse(stored);
-				if (Array.isArray(parsed)) {
-					statusFilter = parsed;
-				}
-			}
+			const parsed = JSON.parse(localStorage.getItem(STATUS_FILTER_STORAGE_KEY) ?? '[]');
+			return Array.isArray(parsed) ? parsed : [];
 		} catch {
-			// Ignore localStorage errors
+			return []; // Ignore localStorage errors (also covers SSR, where localStorage is undefined)
 		}
 	}
 
@@ -946,12 +949,14 @@
 		return () => clearTimeout(searchTimeout);
 	});
 
-	// Sync search query to URL for persistence across navigation
+	// Sync search query and status filter to URL for persistence across navigation.
+	// One effect, so both land in a single goto instead of racing each other.
 	$effect(() => {
 		const q = searchQuery;
 		const url = new URL($page.url);
 		if (q) url.searchParams.set('search', q);
 		else url.searchParams.delete('search');
+		writeStatusFilterParam(url.searchParams, statusFilter);
 		if (url.toString() !== $page.url.toString()) {
 			goto(url.toString(), { replaceState: true, noScroll: true, keepFocus: true });
 		}
@@ -1632,7 +1637,6 @@
 
 	onMount(() => {
 		loadExpandedState();
-		loadStatusFilter();
 		loadLayoutMode();
 
 		// Initial fetch is handled by $effect - no need to duplicate here
