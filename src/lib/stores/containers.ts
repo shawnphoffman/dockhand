@@ -32,6 +32,8 @@ export interface ContainerStoreState {
 	failedUpdateErrors: Map<string, string>;
 	/** Newer VERSION tag (semver) suggestions from the last check, keyed by container ID. Advisory. */
 	newerVersions: Map<string, NewerVersion>;
+	/** True once pending updates have been fetched for this env (so an empty list means "none", not "not yet") */
+	pendingUpdatesLoaded: boolean;
 	/** Whether the current environment has vulnerability scanning */
 	envHasScanning: boolean;
 	/** Environment-level vulnerability criteria */
@@ -52,6 +54,7 @@ const INITIAL_STATE: ContainerStoreState = {
 	failedUpdateIds: [],
 	failedUpdateErrors: new Map(),
 	newerVersions: new Map(),
+	pendingUpdatesLoaded: false,
 	envHasScanning: false,
 	envVulnerabilityCriteria: 'never',
 	loading: true,
@@ -306,7 +309,8 @@ function createContainerStore() {
 				pendingUpdateNames: new Map(withImageUpdate.map((u) => [u.containerId, u.containerName])),
 				newerVersions: new Map(
 					rows.filter((u) => u.newerVersion).map((u) => [u.containerId, u.newerVersion as NewerVersion])
-				)
+				),
+				pendingUpdatesLoaded: true
 			});
 		} catch {
 			// Ignore errors - background load
