@@ -22,7 +22,7 @@ import {
 	type DeletionApplyResult,
 	type DeletionSkipReason
 } from './git-deletions';
-import { buildComposeOperationArgs, shouldRunSeparateBuildStep } from './compose-args';
+import { buildComposeOperationArgs, shouldRunSeparateBuildStep, composeProfilesForOperation } from './compose-args';
 import { findStackNameCollision, moveStackFilePathCrossDevice, resolveStackDirForLayout } from './stack-path-utils';
 import { db, environments, eq } from './db/drizzle.js';
 import { isAllowedStackFilename } from './stack-filename';
@@ -47,11 +47,13 @@ import {
 	getAutoUpdateSetting,
 	getStackSourceByComposePath,
 	getSecretProviderById,
-	setStackInjectedSecretKeys
+	setStackInjectedSecretKeys,
+	getStackProfiles
 } from './db';
 import { getProvider } from './secretproviders';
 import { stripSurroundingQuotes } from './secretproviders/shared';
-import { resolveComposeDockerHost, buildComposeBaseArgs } from './compose-docker-args';
+import { resolveComposeDockerHost, buildComposeBaseArgs, buildComposeProfileArgs, withComposeProfilesEnv } from './compose-docker-args';
+import { COMPOSE_PROFILES_VAR, containersOfInactiveServices, effectiveProfiles, inactiveProfileServices, readComposeProfilesFromEnvFile } from '$lib/utils/compose-profiles';
 import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
@@ -1210,7 +1212,9 @@ async function executeLocalCompose(
 	// host, rewrite the compose's same-dir relative binds (`./x`) to <remoteStackHostDir>/x so the
 	// remote daemon binds the staged files. undefined = no staging, compose unchanged.
 	remoteStackHostDir?: string,
-	onLine?: (line: string) => void
+	onLine?: (line: string) => void,
+	// Active compose profiles (the stack's stored selection), passed as --profile flags.
+	profiles?: string[]
 ): Promise<StackOperationResult> {
 	const logPrefix = `[Stack:${stackName}]`;
 
@@ -1386,6 +1390,7 @@ async function executeLocalCompose(
 	// `-H` is a GLOBAL docker flag, so it goes before `compose`. This connects to the
 	// daemon without putting DOCKER_HOST in the shell env (#1393 - see above).
 	const args = buildComposeBaseArgs(stackName, composeDockerHost);
+	args.push(...buildComposeProfileArgs(profiles));
 
 	// Temp file for path-translated override content (cleaned up in finally block)
 	let tempOverridePath: string | undefined;
@@ -1462,6 +1467,7 @@ async function executeLocalCompose(
 	console.log(`${logPrefix} Force recreate:`, forceRecreate ?? false);
 	console.log(`${logPrefix} Remove volumes:`, removeVolumes ?? false);
 	console.log(`${logPrefix} Service name:`, serviceName ?? '(all services)');
+	console.log(`${logPrefix} Profiles:`, profiles && profiles.length > 0 ? profiles.join(', ') : '(none selected)');
 	console.log(`${logPrefix} Env vars count:`, envVars ? Object.keys(envVars).length : 0);
 	if (envVars && Object.keys(envVars).length > 0) {
 		console.log(`${logPrefix} Env vars being injected (masked):`, JSON.stringify(redactEnvVarsForLog(envVars), null, 2));
@@ -1620,7 +1626,9 @@ async function executeComposeViaHawser(
 	pullPolicy?: string,
 	filesToDelete?: FileToDelete[],
 	removeFiles?: boolean,
-	onLine?: (line: string) => void
+	onLine?: (line: string) => void,
+	// Active compose profiles (the stack's stored selection), sent as COMPOSE_PROFILES.
+	profiles?: string[]
 ): Promise<StackOperationResult> {
 	const logPrefix = `[Stack:${stackName}]`;
 	// Import dockerFetch dynamically to avoid circular dependency
@@ -1644,6 +1652,7 @@ async function executeComposeViaHawser(
 	console.log(`${logPrefix} Remove volumes:`, removeVolumes ?? false);
 	console.log(`${logPrefix} Service name:`, serviceName ?? '(all services)');
 	console.log(`${logPrefix} Compose filename:`, composeFileName ?? '(auto-detect)');
+	console.log(`${logPrefix} Profiles:`, profiles && profiles.length > 0 ? profiles.join(', ') : '(none selected)');
 	console.log(`${logPrefix} Non-secret env vars count:`, envVars ? Object.keys(envVars).length : 0);
 	console.log(`${logPrefix} Secret env vars count:`, secretCount);
 	if (allEnvVars && Object.keys(allEnvVars).length > 0) {
@@ -1693,7 +1702,10 @@ async function executeComposeViaHawser(
 			projectName: stackName,
 			composeFile: composeContent,
 			composeFileName, // Explicit compose filename to use (e.g., "docker-compose.prod.yml")
-			envVars: allEnvVars, // All vars (including secrets) - Hawser injects via shell env
+			// All vars (including secrets) - Hawser injects via shell env. The agent has no
+			// profile option, so the selection rides along as COMPOSE_PROFILES. It is added
+			// here, not to allEnvVars, to stay out of the generated .env and the redaction list.
+			envVars: withComposeProfilesEnv(allEnvVars, profiles),
 			files, // Files including .env (secrets NOT in .env file)
 			forceRecreate: forceRecreate || false,
 			removeVolumes: removeVolumes || false,
@@ -1828,6 +1840,12 @@ async function executeComposeCommand(
 ): Promise<StackOperationResult> {
 	const { stackName, envId, forceRecreate, build, noBuildCache, pullPolicy, removeVolumes, stackFiles, workingDir, composePath, envPath, useOverrideFile, serviceName, composeFileName, filesToDelete, removeFiles } = options;
 
+	// The stack's stored profile selection is resolved here, once, for EVERY compose
+	// command rather than per caller: a `start` that falls back to `up`, a scheduled
+	// `pull`, a restore, a git sync all end up in this function. Which profiles a given
+	// command then runs with depends on the command - see composeProfilesForOperation.
+	const profiles = composeProfilesForOperation(operation, await getStackProfiles(stackName, envId));
+
 	// Get environment configuration
 	const env = envId ? await getEnvironment(envId) : null;
 
@@ -1853,7 +1871,8 @@ async function executeComposeCommand(
 			noBuildCache,
 			pullPolicy,
 			undefined,    // remoteStackHostDir
-			onLine
+			onLine,
+			profiles
 		);
 	}
 
@@ -1920,7 +1939,8 @@ async function executeComposeCommand(
 				pullPolicy,
 				filesToDelete,
 				removeFiles,
-				onLine
+				onLine,
+				profiles
 			);
 		}
 
@@ -1984,7 +2004,8 @@ async function executeComposeCommand(
 				noBuildCache,
 				pullPolicy,
 				remoteStackHostDir,
-				onLine
+				onLine,
+				profiles
 			);
 		}
 
@@ -2018,7 +2039,8 @@ async function executeComposeCommand(
 				noBuildCache,
 				pullPolicy,
 				undefined,    // remoteStackHostDir
-				onLine
+				onLine,
+				profiles
 			);
 		}
 	}
@@ -2228,6 +2250,57 @@ async function cleanupOrphanStackContainers(
 		}
 	} catch (err) {
 		console.warn(`[stacks] Failed to cleanup orphan containers for stack "${stackName}":`, err);
+	}
+}
+
+/**
+ * Remove the containers of services whose compose profile is no longer active.
+ *
+ * `docker compose up` only ever adds: after a profile is deselected, its services'
+ * containers keep running, and `--remove-orphans` leaves them alone because the
+ * services are still defined in the file. Without this, unchecking a profile and
+ * redeploying would appear to do nothing.
+ *
+ * Only runs for stacks whose profiles Dockhand manages (`selection` not null), so a
+ * stack that never used the selector behaves exactly as before. Removal goes through
+ * the Docker API rather than compose, so it works the same on local, direct and
+ * Hawser environments.
+ *
+ * Best-effort: runs after a successful `up` and never changes the deploy's outcome.
+ */
+async function removeInactiveProfileContainers(
+	stackName: string,
+	envId: number | null | undefined,
+	selection: string[] | null | undefined,
+	composeContents: string[],
+	composeProfilesEnv: string | undefined,
+	onLine?: (line: string) => void
+): Promise<void> {
+	if (selection == null) return;
+	const logPrefix = `[Stack:${stackName}]`;
+	try {
+		const inactive = inactiveProfileServices(composeContents, effectiveProfiles(selection, composeProfilesEnv));
+		if (inactive.length === 0) return;
+
+		const containers = containersOfInactiveServices(await getStackContainers(stackName, envId), inactive);
+		if (containers.length === 0) return;
+
+		const { removeContainer } = await import('./docker.js');
+		const results = await Promise.allSettled(
+			containers.map((c) => removeContainer(c.id, true, envId))
+		);
+		results.forEach((r, i) => {
+			const c = containers[i];
+			const label = `${c.name || c.id} (service "${c.labels['com.docker.compose.service']}")`;
+			const line = r.status === 'fulfilled'
+				? `Removed ${label}: its compose profile is no longer active`
+				: `Could not remove ${label}, whose compose profile is no longer active: ${r.reason?.message || 'unknown error'}`;
+			if (r.status === 'fulfilled') console.log(`${logPrefix} ${line}`);
+			else console.warn(`${logPrefix} ${line}`);
+			onLine?.(line);
+		});
+	} catch (err) {
+		console.warn(`${logPrefix} Failed to remove containers of inactive compose profiles:`, err);
 	}
 }
 
@@ -3325,6 +3398,27 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		// RunRecorder.addSecrets() before closing it -- see StackOperationResult's doc
 		// comment and deploy-run-record.ts.
 		result.resolvedSecrets = Object.values(secretVars);
+
+		// `up` leaves a deselected profile's containers running - take them down now.
+		if (result.success && source?.profiles != null) {
+			const overrideFile = findComposeOverrideFile(
+				actualComposePath ? dirname(actualComposePath) : workingDir,
+				composeFilename
+			);
+			let overrideContent = '';
+			if (overrideFile) {
+				try { overrideContent = readFileSync(overrideFile, 'utf-8'); } catch { /* treated as no override */ }
+			}
+			// Same precedence compose applies: shell env (secrets) > .env.dockhand > .env.
+			const composeProfilesEnv =
+				secretVars[COMPOSE_PROFILES_VAR] ??
+				dbNonSecretVars[COMPOSE_PROFILES_VAR] ??
+				readComposeProfilesFromEnvFile(envFileContent);
+			await removeInactiveProfileContainers(
+				name, envId, source.profiles, [compose, overrideContent], composeProfilesEnv, onLine
+			);
+		}
+
 		console.log(`${logPrefix} ========================================`);
 		console.log(`${logPrefix} DEPLOY STACK RESULT`);
 		console.log(`${logPrefix} ========================================`);

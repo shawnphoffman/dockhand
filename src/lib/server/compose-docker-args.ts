@@ -35,3 +35,28 @@ export function buildComposeBaseArgs(
 		? ['docker', '-H', composeDockerHost, 'compose', '-p', stackName]
 		: ['docker', 'compose', '-p', stackName];
 }
+
+/**
+ * Global `--profile <name>` flags for a stack's active compose profiles, one per name.
+ * They are compose-level flags, so they go after `compose -p <name>` and before the
+ * subcommand. Nothing is added for an empty selection, which leaves compose on its own
+ * default (COMPOSE_PROFILES from the env file, if set).
+ */
+export function buildComposeProfileArgs(profiles: readonly string[] | null | undefined): string[] {
+	return (profiles ?? []).flatMap((profile) => ['--profile', profile]);
+}
+
+/**
+ * The same selection for a Hawser agent, which builds its own argv and has no profile
+ * option: COMPOSE_PROFILES in the compose process env does the same job, and a shell
+ * value beats one from the env file just like `--profile` does. Returns `envVars`
+ * untouched for an empty selection.
+ */
+export function withComposeProfilesEnv(
+	envVars: Record<string, string>,
+	profiles: readonly string[] | null | undefined
+): Record<string, string> {
+	return profiles && profiles.length > 0
+		? { ...envVars, COMPOSE_PROFILES: profiles.join(',') }
+		: envVars;
+}

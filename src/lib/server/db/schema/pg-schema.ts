@@ -364,6 +364,9 @@ export const stackSources = pgTable('stack_sources', {
 	// Per-stack icon: a lucide name ('server'), 'selfhst:<ref>', or 'custom:<file>'.
 	// Null -> UI falls back to a generic icon.
 	icon: text('icon'),
+	// Compose profile selection as a JSON string[]. Null = Dockhand does not manage this
+	// stack's profiles; '[]' = managed with none selected. See compose-profiles.ts.
+	profiles: text('profiles'),
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
 }, (table) => ({

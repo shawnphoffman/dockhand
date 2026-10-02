@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 import { listComposeStacks, deployStack, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb } from '$lib/server/stacks';
 import { EnvironmentNotFoundError, DockerConnectionError } from '$lib/server/docker';
-import { upsertStackSource, getStackSources, secretProviderExists } from '$lib/server/db';
+import { upsertStackSource, getStackSources, secretProviderExists, setStackProfiles } from '$lib/server/db';
+import { normalizeProfileSelection } from '$lib/utils/compose-profiles';
 import { authorize } from '$lib/server/authorize';
 import { auditStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
@@ -87,10 +88,10 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 /**
  * @openapi
  * summary: Create and (optionally) deploy a compose stack
- * description: Writes the compose + .env to the stack dir, stores secrets in the DB, and with start deploys it. Can bind a secret provider. Target environment comes from the env query param, or from envId/environmentId in the body when the query is absent.
+ * description: Writes the compose + .env to the stack dir, stores secrets in the DB, and with start deploys it. Can bind a secret provider and select the compose profiles to activate. Target environment comes from the env query param, or from envId/environmentId in the body when the query is absent.
  * query: env:integer Target environment id (takes precedence over envId/environmentId in the body)
- * body: {name:string!, compose:string!, composePath:string, envPath:string, envVars:array<object>, rawEnvContent:string, secretProviderId:integer, start:boolean, envId:integer, environmentId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
- * resp-400: Invalid request (e.g. missing name/compose, or secretProviderId wrong type)
+ * body: {name:string!, compose:string!, composePath:string, envPath:string, envVars:array<object>, rawEnvContent:string, secretProviderId:integer, profiles:array<string>, start:boolean, envId:integer, environmentId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
+ * resp-400: Invalid request (e.g. missing name/compose, secretProviderId wrong type, or a malformed profile name)
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
  * resp-500: Failed to create or deploy the stack
  */
@@ -123,7 +124,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const { name, compose, start, envVars, rawEnvContent, composePath, envPath, secretProviderId, pull, build, forceRecreate } = body;
+		const { name, compose, start, envVars, rawEnvContent, composePath, envPath, secretProviderId, pull, build, forceRecreate, profiles } = body;
 
 		if (!name || typeof name !== 'string') {
 			return json({ error: 'Stack name is required' }, { status: 400 });
@@ -139,6 +140,13 @@ export const POST: RequestHandler = async (event) => {
 			typeof secretProviderId !== 'number'
 		) {
 			return json({ error: 'secretProviderId must be a number or null' }, { status: 400 });
+		}
+
+		// Compose profiles to activate (optional). Validated up front so a bad name is
+		// rejected before anything is written to disk.
+		const profileSelection = normalizeProfileSelection(profiles ?? []);
+		if (!profileSelection.ok) {
+			return json({ error: profileSelection.error }, { status: 400 });
 		}
 
 		// Binding a secret provider resolves its secrets into the container at deploy;
@@ -195,6 +203,7 @@ export const POST: RequestHandler = async (event) => {
 				envPath: envPath || undefined,
 				secretProviderId,
 			});
+			await setStackProfiles(name, envIdNum, profileSelection.profiles);
 
 			// Audit log
 			await auditStack(event, 'create', name, envIdNum);
@@ -238,6 +247,8 @@ export const POST: RequestHandler = async (event) => {
 			envPath: envPath || undefined,
 			secretProviderId
 		});
+		// Stored before the deploy: every compose command reads the selection from here.
+		await setStackProfiles(name, envIdNum, profileSelection.profiles);
 
 		// This endpoint has no requireComposeFile() call to hash the way the
 		// dedicated deploy endpoint does -- compose and the effective env are

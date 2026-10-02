@@ -9,8 +9,10 @@ import {
 	upsertStackSource,
 	setStackEnvVars,
 	getStackSource,
+	setStackProfiles,
 	secretProviderExists
 } from '$lib/server/db';
+import { normalizeProfileSelection } from '$lib/utils/compose-profiles';
 import { deployGitStack } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
 import { registerSchedule } from '$lib/server/scheduler';
@@ -53,8 +55,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 /**
  * @openapi
  * summary: Create a git-deployed stack (from an existing repo or new repo url/branch)
- * body: {stackName:string!, environmentId:integer, repositoryId:integer, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string}
- * resp-400: Invalid stack name, or secretProviderId is not a number/null
+ * body: {stackName:string!, environmentId:integer, repositoryId:integer, secretProviderId:integer, profiles:array<string>, webhookEnabled:boolean, webhookSecret:string}
+ * resp-400: Invalid stack name, secretProviderId is not a number/null, or a malformed compose profile name
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
  * resp-409: A git stack with this name already exists in the environment
  * resp-500: Failed to create the git stack
@@ -104,6 +106,12 @@ export const POST: RequestHandler = async (event) => {
 		// it cleanly so the user knows to reselect a provider (#1522).
 		if (typeof data.secretProviderId === 'number' && !(await secretProviderExists(data.secretProviderId))) {
 			return json({ error: 'The selected secret provider no longer exists. Reopen the stack and pick a current provider.' }, { status: 400 });
+		}
+
+		// Compose profiles to activate (optional) - validated before anything is created.
+		const profileSelection = normalizeProfileSelection(data.profiles ?? []);
+		if (!profileSelection.ok) {
+			return json({ error: profileSelection.error }, { status: 400 });
 		}
 
 		// Check for name conflicts with existing stacks (regular/external/git)
@@ -192,6 +200,8 @@ export const POST: RequestHandler = async (event) => {
 			gitStackId: gitStack.id,
 			secretProviderId: data.secretProviderId ?? null
 		});
+		// Stored before any deploy below: every compose command reads the selection from here.
+		await setStackProfiles(trimmedStackName, data.environmentId || null, profileSelection.profiles);
 
 		// Register schedule with croner if auto-update is enabled
 		if (gitStack.autoUpdate && gitStack.autoUpdateCron) {

@@ -93,6 +93,7 @@ import type { AllGridPreferences, GridId, GridColumnPreferences } from '$lib/typ
 import { encrypt, decrypt, decryptStrict, isEncrypted } from './encryption.js';
 import { parseEnvInterpolation } from './env-interpolation';
 import { parseInjectedSecretKeys, serializeInjectedSecretKeys } from './stack-secret-keys';
+import { parseStoredProfiles, serializeStoredProfiles, nextStoredProfiles } from '$lib/utils/compose-profiles';
 import { invalidateVulnerabilitiesCache } from './vulnerabilities-cache';
 
 // Re-export for backwards compatibility
@@ -2985,6 +2986,8 @@ export interface StackSourceData {
 	envPath: string | null;
 	secretProviderId: number | null;
 	icon: string | null;
+	/** Compose profile selection: null = not managed by Dockhand, [] = managed with none selected. */
+	profiles: string[] | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -3018,6 +3021,7 @@ export async function getStackSource(stackName: string, environmentId?: number |
 
 	return {
 		...row,
+		profiles: parseStoredProfiles(row.profiles),
 		repository,
 		gitStack: gitStackData
 	} as StackSourceWithRepo;
@@ -3046,6 +3050,7 @@ export async function getStackSourceByComposePath(composePath: string, environme
 
 	return {
 		...row,
+		profiles: parseStoredProfiles(row.profiles),
 		repository,
 		gitStack: gitStackData
 	} as StackSourceWithRepo;
@@ -3076,6 +3081,7 @@ export async function getStackSources(environmentId?: number | null): Promise<St
 
 		enrichedResults.push({
 			...row,
+			profiles: parseStoredProfiles(row.profiles),
 			repository,
 			gitStack: gitStackData
 		} as StackSourceWithRepo);
@@ -3193,6 +3199,41 @@ export async function getStackInjectedSecretKeys(
 	const source = await getStackSource(stackName, environmentId ?? null);
 	const raw = (source as { injectedSecretKeys?: string | null } | null)?.injectedSecretKeys;
 	return parseInjectedSecretKeys(raw);
+}
+
+/**
+ * Persist a stack's compose profile selection (see compose-profiles.ts for the
+ * null / [] / [names] semantics). Clearing the selection of a stack that never had
+ * one leaves the column null. Returns the value now stored, or undefined when the
+ * stack has no source row to store it on.
+ */
+export async function setStackProfiles(
+	stackName: string,
+	environmentId: number | null | undefined,
+	profiles: string[]
+): Promise<string[] | null | undefined> {
+	const existing = await getStackSource(stackName, environmentId ?? null);
+	if (!existing) return undefined;
+	const next = nextStoredProfiles(existing.profiles, profiles);
+	await db.update(stackSources)
+		.set({
+			profiles: serializeStoredProfiles(next),
+			updatedAt: new Date().toISOString()
+		})
+		.where(eq(stackSources.id, existing.id));
+	return next;
+}
+
+/**
+ * Read a stack's compose profile selection. null means Dockhand does not manage the
+ * stack's profiles (no source row, or the selector was never used).
+ */
+export async function getStackProfiles(
+	stackName: string,
+	environmentId?: number | null
+): Promise<string[] | null> {
+	const source = await getStackSource(stackName, environmentId ?? null);
+	return source?.profiles ?? null;
 }
 
 export async function deleteStackSource(stackName: string, environmentId?: number | null): Promise<boolean> {

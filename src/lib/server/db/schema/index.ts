@@ -361,6 +361,9 @@ export const stackSources = sqliteTable('stack_sources', {
 	// Per-stack icon: a lucide name ('server'), 'selfhst:<ref>', or 'custom:<file>'.
 	// Null -> UI falls back to a generic icon.
 	icon: text('icon'),
+	// Compose profile selection as a JSON string[]. Null = Dockhand does not manage this
+	// stack's profiles; '[]' = managed with none selected. See compose-profiles.ts.
+	profiles: text('profiles'),
 	createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
 }, (table) => ({

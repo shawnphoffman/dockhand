@@ -66,7 +66,10 @@ const KNOWN_EXPORTS = [
 	'upsertStackSource',
 	'getEnvironment',
 	'getSecretEnvVarsAsRecord',
-	'getNonSecretEnvVarsAsRecord'
+	'getNonSecretEnvVarsAsRecord',
+	'getStackSource',
+	'getStackProfiles',
+	'setStackProfiles'
 ] as const;
 
 const impls: Record<string, AnyFn> = {};

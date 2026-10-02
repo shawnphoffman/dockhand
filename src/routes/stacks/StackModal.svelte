@@ -43,6 +43,8 @@
 	import { toast } from 'svelte-sonner';
 	import ComposeGraphViewer from './ComposeGraphViewer.svelte';
 	import RedeployPopover from './RedeployPopover.svelte';
+	import ComposeProfilesPicker from './ComposeProfilesPicker.svelte';
+	import { COMPOSE_PROFILES_VAR, effectiveProfiles, parseComposeProfilesEnv, parseDeclaredProfiles } from '$lib/utils/compose-profiles';
 	import { hasBuildSection as detectBuildSection } from '$lib/utils/compose-build-detect';
 
 
@@ -176,6 +178,7 @@
 	let formSecretProviderId = $state<number | null>(null);
 	// Provider-injected key NAMES from the last deploy (banner)
 	let injectedSecretKeys = $state<string[]>([]);
+
 	// Provider type/name for the injected-secrets banner in the env panel.
 	const selectedProviderType = $derived(
 		secretProviders.find((p) => p.id === formSecretProviderId)?.type ?? null
@@ -197,6 +200,46 @@
 
 	// Environment variables state
 	let envVars = $state<EnvVar[]>([]);
+
+	// Compose profiles: which of the profiles declared in the compose file are active.
+	// Saved with the stack; on a read-only (git) stack, where there is no Save, each
+	// toggle is stored right away and applies on the next deploy.
+	let selectedProfiles = $state<string[]>([]);
+	const declaredProfiles = $derived(parseDeclaredProfiles(composeContent));
+	// COMPOSE_PROFILES from the env vars panel - what compose falls back to while
+	// nothing is selected here.
+	const envComposeProfiles = $derived(
+		parseComposeProfilesEnv(envVars.find((v) => v.key.trim() === COMPOSE_PROFILES_VAR)?.value)
+	);
+	// What compose will actually activate, for greying out services in the graph.
+	const activeProfiles = $derived(effectiveProfiles(selectedProfiles, envComposeProfiles.join(',')));
+
+	async function handleProfilesChange(next: string[]) {
+		if (!readonly) {
+			markDirty();
+			return;
+		}
+		const envId = $currentEnvironment?.id ?? null;
+		try {
+			const res = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/profiles`, envId), {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ profiles: next })
+			});
+			const data = await res.json().catch(() => ({}));
+			if (!res.ok) throw new Error(data.error || 'Failed to save profiles');
+			selectedProfiles = data.profiles ?? next;
+			toast.success('Profiles saved. They apply on the next deploy.');
+			onSuccess();
+		} catch (e: any) {
+			toast.error(e.message || 'Failed to save profiles');
+			// Re-read the stored selection so the chips never show something unsaved.
+			try {
+				const res = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/profiles`, envId));
+				if (res.ok) selectedProfiles = (await res.json()).profiles ?? [];
+			} catch { /* keep what is shown */ }
+		}
+	}
 	let rawEnvContent = $state(''); // Raw .env file content (comments preserved)
 	let envValidation = $state<ValidationResult | null>(null);
 	let validating = $state(false);
@@ -384,6 +427,11 @@
 			for (const v of envVars) {
 				const k = v.key.trim();
 				if (k) validateEnvVars[k] = v.value ?? '';
+			}
+			// Validate with the same profiles the deploy will activate, else a service that
+			// depends_on a profile-gated one is reported as depending on an undefined service.
+			if (selectedProfiles.length > 0) {
+				validateEnvVars[COMPOSE_PROFILES_VAR] = selectedProfiles.join(',');
 			}
 			const res = await fetch(
 				appendEnvParam(`/api/stacks/${encodeURIComponent(name)}/validate`, envId),
@@ -1439,6 +1487,7 @@
 			// Track original paths for detecting changes
 			originalComposePath = data.composePath || null;
 			originalEnvPath = data.envPath || null;
+			selectedProfiles = Array.isArray(data.profiles) ? data.profiles : [];
 
 			// Load secret provider binding
 			try {
@@ -1618,6 +1667,7 @@
 			}
 
 			requestBody.secretProviderId = formSecretProviderId;
+			requestBody.profiles = selectedProfiles;
 
 			// Only meaningful when start is true -- deployOptions is undefined for the
 			// plain "Create" button, which never reaches deployStack server-side anyway.
@@ -1798,6 +1848,7 @@
 			}
 
 			requestBody.secretProviderId = formSecretProviderId;
+			requestBody.profiles = selectedProfiles;
 
 			// Only meaningful when restart is true -- deployOptions is undefined for the
 			// plain "Save" button, which never reaches deployStack server-side anyway.
@@ -1963,6 +2014,7 @@
 		pendingUploadImage = null;
 		composeContent = '';
 		envVars = [];
+		selectedProfiles = [];
 		envValidation = null;
 		isDirty = false;
 		existingSecretKeys = new Set();
@@ -2582,6 +2634,13 @@
 									providers={secretProviders}
 									onchange={() => { markDirty(); debouncedValidate(); }}
 								/>
+								<ComposeProfilesPicker
+									declared={declaredProfiles}
+									bind:selected={selectedProfiles}
+									envProfiles={envComposeProfiles}
+									disabled={saving}
+									onchange={handleProfilesChange}
+								/>
 								<StackEnvVarsPanel
 									bind:this={envVarsPanelRef}
 									bind:variables={envVars}
@@ -2608,6 +2667,7 @@
 							composeContent={composeContent || (mode === 'create' ? defaultCompose : '')}
 							class="h-full flex-1"
 							onContentChange={readonly ? undefined : handleGraphContentChange}
+							{activeProfiles}
 							{readonly}
 						/>
 					{:else if activeTab === 'backups' && !needsFileLocation}

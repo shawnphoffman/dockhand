@@ -14661,7 +14661,7 @@
             "description": "Successful response"
           },
           "400": {
-            "description": "Invalid stack name, or secretProviderId is not a number/null"
+            "description": "Invalid stack name, secretProviderId is not a number/null, or a malformed compose profile name"
           },
           "403": {
             "description": "Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)"
@@ -14700,6 +14700,12 @@
                   "secretProviderId": {
                     "type": "integer"
                   },
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "webhookEnabled": {
                     "type": "boolean"
                   },
@@ -14716,6 +14722,9 @@
                 "environmentId": 0,
                 "repositoryId": 0,
                 "secretProviderId": 0,
+                "profiles": [
+                  "string"
+                ],
                 "webhookEnabled": true,
                 "webhookSecret": "string"
               }
@@ -14770,7 +14779,7 @@
         "tags": [
           "git"
         ],
-        "summary": "Update a git stack (rename, schedule, webhook, secret-provider binding)",
+        "summary": "Update a git stack (rename, schedule, webhook, secret-provider binding, compose profiles)",
         "parameters": [
           {
             "name": "id",
@@ -14787,7 +14796,7 @@
             "description": "Successful response"
           },
           "400": {
-            "description": "Invalid stack name, or secretProviderId is not a number/null"
+            "description": "Invalid stack name, secretProviderId is not a number/null, or a malformed compose profile name"
           },
           "403": {
             "description": "Permission denied (needs stacks:edit; binding a secret provider also needs secrets:view)"
@@ -14820,6 +14829,12 @@
                   "secretProviderId": {
                     "type": "integer"
                   },
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "webhookEnabled": {
                     "type": "boolean"
                   },
@@ -14831,6 +14846,9 @@
               "example": {
                 "stackName": "string",
                 "secretProviderId": 0,
+                "profiles": [
+                  "string"
+                ],
                 "webhookEnabled": true,
                 "webhookSecret": "string"
               }
@@ -25224,7 +25242,7 @@
             "description": "Successful response"
           },
           "400": {
-            "description": "Invalid request (e.g. missing name/compose, or secretProviderId wrong type)"
+            "description": "Invalid request (e.g. missing name/compose, secretProviderId wrong type, or a malformed profile name)"
           },
           "403": {
             "description": "Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)"
@@ -25241,7 +25259,7 @@
             "bearerAuth": []
           }
         ],
-        "description": "Writes the compose + .env to the stack dir, stores secrets in the DB, and with start deploys it. Can bind a secret provider. Target environment comes from the env query param, or from envId/environmentId in the body when the query is absent.",
+        "description": "Writes the compose + .env to the stack dir, stores secrets in the DB, and with start deploys it. Can bind a secret provider and select the compose profiles to activate. Target environment comes from the env query param, or from envId/environmentId in the body when the query is absent.",
         "requestBody": {
           "required": true,
           "content": {
@@ -25273,6 +25291,12 @@
                   },
                   "secretProviderId": {
                     "type": "integer"
+                  },
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "start": {
                     "type": "boolean"
@@ -25308,6 +25332,9 @@
                 ],
                 "rawEnvContent": "string",
                 "secretProviderId": 0,
+                "profiles": [
+                  "string"
+                ],
                 "start": true,
                 "envId": 0,
                 "environmentId": 0,
@@ -25532,7 +25559,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "Get a stack's compose file content plus its resolved compose/env paths",
+        "summary": "Get a stack's compose file content plus its resolved compose/env paths and selected compose profiles",
         "parameters": [
           {
             "name": "name",
@@ -25607,7 +25634,7 @@
             "description": "Successful response"
           },
           "400": {
-            "description": "Invalid request (e.g. missing content, or secretProviderId wrong type)"
+            "description": "Invalid request (e.g. missing content, secretProviderId wrong type, or a malformed profile name)"
           },
           "403": {
             "description": "Permission denied (needs stacks:edit; binding a secret provider also needs secrets:view)"
@@ -25624,7 +25651,7 @@
             "bearerAuth": []
           }
         ],
-        "description": "Every accepted PUT persists the compose content; with restart it also redeploys. Supports moving the compose/env to a new path and binding a secret provider.",
+        "description": "Every accepted PUT persists the compose content; with restart it also redeploys. Supports moving the compose/env to a new path, binding a secret provider, and selecting the compose profiles to activate (profiles omitted = selection unchanged). On redeploy, containers of services whose profile was deselected are removed.",
         "requestBody": {
           "required": true,
           "content": {
@@ -25656,6 +25683,12 @@
                   "secretProviderId": {
                     "type": "integer"
                   },
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "pull": {
                     "type": "boolean"
                   },
@@ -25679,6 +25712,9 @@
                 "moveFromDir": "string",
                 "restart": true,
                 "secretProviderId": 0,
+                "profiles": [
+                  "string"
+                ],
                 "pull": true,
                 "build": true,
                 "forceRecreate": true
@@ -26994,6 +27030,190 @@
         ]
       }
     },
+    "/api/stacks/{name}/profiles": {
+      "get": {
+        "operationId": "get_api_stacks_name_profiles",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Get a stack's compose profiles - the ones selected to be active and the ones its compose file declares",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment id the stack belongs to"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "profiles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "declared": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "managed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "profiles",
+                    "declared",
+                    "managed"
+                  ]
+                },
+                "example": {
+                  "profiles": [
+                    "cron"
+                  ],
+                  "declared": [
+                    "cron",
+                    "debug"
+                  ],
+                  "managed": true
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:view)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "`profiles` is the stored selection, applied to every compose command Dockhand runs for the stack. `declared` lists the profile names found on services in the stack's compose file (empty when the file is not available locally). `managed` is false until a profile has been selected for the stack at least once; an unmanaged stack is run exactly as compose would run it on its own."
+      },
+      "put": {
+        "operationId": "put_api_stacks_name_profiles",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Set which compose profiles are active for a stack (takes effect on the next deploy)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment id the stack belongs to"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "profiles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "profiles"
+                  ]
+                },
+                "example": {
+                  "profiles": [
+                    "cron"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "profiles is missing, not an array of strings, or contains a malformed profile name"
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:edit)"
+          },
+          "404": {
+            "description": "Stack is not tracked by Dockhand"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Stores the selection without touching running containers. The next deploy starts the services of the selected profiles and removes the containers of services whose profile is no longer selected. Names do not have to be declared in the current compose file. An empty array clears the selection, leaving compose on its own default (COMPOSE_PROFILES from the stack's env file, if set).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "profiles"
+                ]
+              },
+              "example": {
+                "profiles": [
+                  "cron"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/stacks/{name}/relocate": {
       "post": {
         "operationId": "post_api_stacks_name_relocate",
@@ -28136,7 +28356,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "List stack source records (their stored compose/env paths and source type, plus an env-var count)",
+        "summary": "List stack source records (their stored compose/env paths, source type and selected compose profiles, plus an env-var count)",
         "parameters": [
           {
             "name": "env",
