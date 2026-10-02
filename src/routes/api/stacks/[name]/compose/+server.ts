@@ -1,6 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getStackComposeFile, deployStack, saveStackComposeFile, requireComposeFile } from '$lib/server/stacks';
+import { getStackProfiles, setStackProfiles } from '$lib/server/db';
+import { normalizeProfileSelection } from '$lib/utils/compose-profiles';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
 import { createRunRecorder } from '$lib/server/deploy-run-record';
@@ -9,7 +11,7 @@ import { hashComposeContent, hashEnvFingerprint } from '$lib/server/deploy-run-r
 // GET /api/stacks/[name]/compose - Get compose file content
 /**
  * @openapi
- * summary: Get a stack's compose file content plus its resolved compose/env paths
+ * summary: Get a stack's compose file content plus its resolved compose/env paths and selected compose profiles
  * path: name:string The stack name
  * query: env:integer Environment id the stack belongs to
  * resp-403: Permission denied (needs stacks:view)
@@ -45,7 +47,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			stackDir: result.stackDir,
 			composePath: result.composePath,
 			envPath: result.envPath,
-			suggestedEnvPath: result.suggestedEnvPath
+			suggestedEnvPath: result.suggestedEnvPath,
+			profiles: (await getStackProfiles(name, envIdNum)) ?? []
 		});
 	} catch (error: any) {
 		console.error(`Error getting compose file for stack ${name}:`, error);
@@ -57,11 +60,11 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 /**
  * @openapi
  * summary: Save a stack's compose file (and optionally relocate it, bind a secret provider, and redeploy)
- * description: Every accepted PUT persists the compose content; with restart it also redeploys. Supports moving the compose/env to a new path and binding a secret provider.
+ * description: Every accepted PUT persists the compose content; with restart it also redeploys. Supports moving the compose/env to a new path, binding a secret provider, and selecting the compose profiles to activate (profiles omitted = selection unchanged). On redeploy, containers of services whose profile was deselected are removed.
  * path: name:string The stack name
  * query: env:integer Environment id the stack belongs to
- * body: {content:string!, composePath:string, envPath:string, oldComposePath:string, oldEnvPath:string, moveFromDir:string, restart:boolean, secretProviderId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
- * resp-400: Invalid request (e.g. missing content, or secretProviderId wrong type)
+ * body: {content:string!, composePath:string, envPath:string, oldComposePath:string, oldEnvPath:string, moveFromDir:string, restart:boolean, secretProviderId:integer, profiles:array<string>, pull:boolean, build:boolean, forceRecreate:boolean}
+ * resp-400: Invalid request (e.g. missing content, secretProviderId wrong type, or a malformed profile name)
  * resp-403: Permission denied (needs stacks:edit; binding a secret provider also needs secrets:view)
  * resp-500: Failed to save or deploy the compose file
  */
@@ -81,7 +84,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 
 	try {
 		const body = await request.json();
-		const { content, restart = false, composePath, envPath, moveFromDir, oldComposePath, oldEnvPath, secretProviderId, pull, build, forceRecreate } = body;
+		const { content, restart = false, composePath, envPath, moveFromDir, oldComposePath, oldEnvPath, secretProviderId, pull, build, forceRecreate, profiles } = body;
 
 		if (!content || typeof content !== 'string') {
 			return json({ error: 'Compose file content is required' }, { status: 400 });
@@ -93,6 +96,12 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 			typeof secretProviderId !== 'number'
 		) {
 			return json({ error: 'secretProviderId must be a number or null' }, { status: 400 });
+		}
+
+		// Compose profile selection: omitted = leave the stored selection alone.
+		const profileSelection = profiles === undefined ? undefined : normalizeProfileSelection(profiles);
+		if (profileSelection && !profileSelection.ok) {
+			return json({ error: profileSelection.error }, { status: 400 });
 		}
 
 		// Binding a secret provider resolves its secrets into the container at deploy;
@@ -119,6 +128,12 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 		const saveResult = await saveStackComposeFile(name, content, false, envIdNum, pathOptions);
 		if (!saveResult.success) {
 			return json({ error: saveResult.error }, { status: 500 });
+		}
+
+		// Stored before the deploy below: every compose command reads the selection
+		// from here, and the deploy compares it against what is running.
+		if (profileSelection?.ok) {
+			await setStackProfiles(name, envIdNum, profileSelection.profiles);
 		}
 
 		if (restart) {

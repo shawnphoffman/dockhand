@@ -6,7 +6,9 @@
 import { describe, test, expect } from 'bun:test';
 import {
 	resolveComposeDockerHost,
-	buildComposeBaseArgs
+	buildComposeBaseArgs,
+	buildComposeProfileArgs,
+	withComposeProfilesEnv
 } from '../src/lib/server/compose-docker-args';
 
 describe('resolveComposeDockerHost', () => {
@@ -45,5 +47,36 @@ describe('buildComposeBaseArgs', () => {
 	test('the daemon is NEVER placed after `compose` (would be an invalid subcommand flag)', () => {
 		const args = buildComposeBaseArgs('s', 'unix:///own.sock');
 		expect(args.indexOf('-H')).toBeLessThan(args.indexOf('compose'));
+	});
+});
+
+describe('buildComposeProfileArgs', () => {
+	test('one --profile flag per selected profile, in order', () => {
+		expect(buildComposeProfileArgs(['cron', 'mcp'])).toEqual(['--profile', 'cron', '--profile', 'mcp']);
+	});
+	test('nothing for an empty or missing selection (compose keeps its own default)', () => {
+		expect(buildComposeProfileArgs([])).toEqual([]);
+		expect(buildComposeProfileArgs(null)).toEqual([]);
+		expect(buildComposeProfileArgs(undefined)).toEqual([]);
+	});
+	test('lands between the project flag and the subcommand', () => {
+		const args = [...buildComposeBaseArgs('mystack', undefined), ...buildComposeProfileArgs(['cron']), 'up', '-d'];
+		expect(args).toEqual(['docker', 'compose', '-p', 'mystack', '--profile', 'cron', 'up', '-d']);
+	});
+});
+
+describe('withComposeProfilesEnv (Hawser)', () => {
+	test('adds COMPOSE_PROFILES as a comma-separated list without mutating the input', () => {
+		const envVars = { FOO: 'bar' };
+		expect(withComposeProfilesEnv(envVars, ['cron', 'mcp'])).toEqual({ FOO: 'bar', COMPOSE_PROFILES: 'cron,mcp' });
+		expect(envVars).toEqual({ FOO: 'bar' });
+	});
+	test('a selection overrides a COMPOSE_PROFILES the stack set itself', () => {
+		expect(withComposeProfilesEnv({ COMPOSE_PROFILES: 'debug' }, ['cron'])).toEqual({ COMPOSE_PROFILES: 'cron' });
+	});
+	test('an empty or missing selection leaves the env untouched', () => {
+		const envVars = { COMPOSE_PROFILES: 'debug' };
+		expect(withComposeProfilesEnv(envVars, [])).toBe(envVars);
+		expect(withComposeProfilesEnv(envVars, null)).toBe(envVars);
 	});
 });

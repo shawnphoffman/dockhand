@@ -72,7 +72,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; repository?: any; gitStack?: any; icon?: string | null; profiles?: string[] }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -1984,6 +1984,19 @@
 							</Tooltip.Trigger>
 							<Tooltip.Content>
 								{stackEnvVarCounts[stack.name]} environment variable{stackEnvVarCounts[stack.name] !== 1 ? 's' : ''} configured
+							</Tooltip.Content>
+						</Tooltip.Root>
+					{/if}
+					{#if source.profiles && source.profiles.length > 0}
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<span class="inline-flex items-center gap-0.5 shrink-0 text-2xs px-1 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300">
+									<Layers class="w-2.5 h-2.5" />
+									{source.profiles.length}
+								</span>
+							</Tooltip.Trigger>
+							<Tooltip.Content>
+								Active compose profile{source.profiles.length !== 1 ? 's' : ''}: {source.profiles.join(', ')}
 							</Tooltip.Content>
 						</Tooltip.Root>
 					{/if}

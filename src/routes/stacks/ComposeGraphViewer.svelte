@@ -9,6 +9,7 @@
 		Circle, Target, Sparkles, Lightbulb,
 		Share2, Server, Globe, MonitorSmartphone, Cpu, CircleOff
 	} from 'lucide-svelte';
+	import { isServiceActive, parseDeclaredProfiles } from '$lib/utils/compose-profiles';
 	import * as Select from '$lib/components/ui/select';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -20,9 +21,14 @@
 		class?: string;
 		onContentChange?: (content: string) => void;
 		readonly?: boolean;
+		/** Active compose profiles. Services gated by a profile that is not active are drawn dimmed. */
+		activeProfiles?: string[];
 	}
 
-	let { composeContent, class: className = '', onContentChange, readonly = false }: Props = $props();
+	let { composeContent, class: className = '', onContentChange, readonly = false, activeProfiles = [] }: Props = $props();
+
+	// Whether any service is gated by a profile - only then does the legend explain the dimming.
+	const hasProfiles = $derived(parseDeclaredProfiles(composeContent).length > 0);
 
 	let containerEl: HTMLDivElement | null = $state(null);
 	let cy: cytoscape.Core | null = null;
@@ -225,6 +231,9 @@
 			const imageStr = config.image || (config.build ? 'build' : 'custom');
 			// Truncate long image names
 			const shortImage = imageStr.length > 25 ? imageStr.substring(0, 22) + '...' : imageStr;
+			const profiles: string[] = Array.isArray(config.profiles)
+				? config.profiles.filter((p: unknown): p is string => typeof p === 'string')
+				: [];
 
 			elements.push({
 				data: {
@@ -239,6 +248,8 @@
 					restart: config.restart || 'no',
 					healthcheck: !!config.healthcheck,
 					dependsOn,
+					profiles,
+					inactive: !isServiceActive(profiles, activeProfiles),
 					config: config
 				}
 			});
@@ -548,6 +559,14 @@
 						'background-position-y': '50%',
 						'background-clip': 'none',
 						'text-margin-x': 10
+					}
+				},
+				// Services whose compose profile is not active (they will not be started)
+				{
+					selector: 'node[type="service"][?inactive]',
+					style: {
+						'opacity': 0.45,
+						'border-style': 'dashed'
 					}
 				},
 				// Missing service nodes (ghost nodes for failed dependencies)
@@ -2333,6 +2352,12 @@
 						<div class="w-2 h-2 rounded-sm bg-red-500 flex-shrink-0"></div>
 						<span class="text-zinc-600 dark:text-zinc-300">Secret</span>
 					</div>
+					{#if hasProfiles}
+						<div class="flex items-center gap-1 flex-shrink-0">
+							<div class="w-2 h-2 rounded-sm border border-dashed border-blue-500 opacity-60 flex-shrink-0"></div>
+							<span class="text-zinc-600 dark:text-zinc-300">Profile not active</span>
+						</div>
+					{/if}
 				</div>
 			</div>
 			<!-- Details panel (overlay) -->

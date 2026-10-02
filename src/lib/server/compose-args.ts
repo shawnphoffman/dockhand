@@ -75,3 +75,22 @@ export function shouldRunSeparateBuildStep(
 	const isHawser = connectionType === 'hawser-standard' || connectionType === 'hawser-edge';
 	return !!build && !!noBuildCache && !isHawser;
 }
+
+/**
+ * Which compose profiles a command should run with, given the stack's stored selection
+ * (null = Dockhand does not manage this stack's profiles, so nothing is passed).
+ *
+ * Commands that CREATE or FETCH for services (up, pull, build) get exactly the
+ * selection. Commands that act on containers that already exist (stop, start, restart,
+ * down) get the `*` wildcard instead: with an explicit compose file, compose limits
+ * those to the active profiles' services, so a `down` run with the selection would
+ * leave behind a container whose profile was deselected since the last deploy.
+ */
+export function composeProfilesForOperation(
+	operation: 'up' | 'down' | 'stop' | 'start' | 'restart' | 'pull' | 'build',
+	selection: readonly string[] | null | undefined
+): string[] {
+	if (selection == null) return [];
+	if (operation === 'up' || operation === 'pull' || operation === 'build') return [...selection];
+	return ['*'];
+}

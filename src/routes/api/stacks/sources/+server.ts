@@ -6,7 +6,7 @@ import { authorize } from '$lib/server/authorize';
 
 /**
  * @openapi
- * summary: List stack source records (their stored compose/env paths and source type, plus an env-var count)
+ * summary: List stack source records (their stored compose/env paths, source type and selected compose profiles, plus an env-var count)
  * query: env:integer Filter to a single environment id
  * resp-403: Permission denied (needs stacks:view)
  * resp-500: Failed to list stack sources
@@ -34,6 +34,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				repository?: any;
 				secretProviderId?: number | null;
 				icon?: string | null;
+				profiles?: string[];
 				envVarCount?: number;
 			}
 		> = {};
@@ -57,6 +58,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				repository: source.repository,
 				secretProviderId: source.secretProviderId,
 				icon: source.icon ?? null,
+				profiles: source.profiles ?? [],
 				envVarCount: counts[i],
 			};
 		});

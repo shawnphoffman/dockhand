@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars, updateStackSource, secretProviderExists } from '$lib/server/db';
+import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars, updateStackSource, secretProviderExists, setStackProfiles } from '$lib/server/db';
+import { normalizeProfileSelection } from '$lib/utils/compose-profiles';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
 import { normalizeStackBranchUpdate } from '$lib/git-stack-branch';
 import { authorize } from '$lib/server/authorize';
@@ -45,10 +46,10 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
 
 /**
  * @openapi
- * summary: Update a git stack (rename, schedule, webhook, secret-provider binding)
+ * summary: Update a git stack (rename, schedule, webhook, secret-provider binding, compose profiles)
  * path: id:integer The git stack id
- * body: {stackName:string, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string}
- * resp-400: Invalid stack name, or secretProviderId is not a number/null
+ * body: {stackName:string, secretProviderId:integer, profiles:array<string>, webhookEnabled:boolean, webhookSecret:string}
+ * resp-400: Invalid stack name, secretProviderId is not a number/null, or a malformed compose profile name
  * resp-403: Permission denied (needs stacks:edit; binding a secret provider also needs secrets:view)
  * resp-404: Git stack not found
  * resp-500: Failed to update the git stack
@@ -88,6 +89,12 @@ export const PUT: RequestHandler = async (event) => {
 			!(await auth.can('secrets', 'view', existing.environmentId || undefined))
 		) {
 			return json({ error: 'Permission denied: binding a secret provider requires the secrets permission' }, { status: 403 });
+		}
+
+		// Compose profile selection: omitted = leave the stored selection alone.
+		const profileSelection = data.profiles === undefined ? undefined : normalizeProfileSelection(data.profiles);
+		if (profileSelection && !profileSelection.ok) {
+			return json({ error: profileSelection.error }, { status: 400 });
 		}
 
 		// A stale provider id (provider deleted/recreated while the editor held the old
@@ -160,6 +167,11 @@ export const PUT: RequestHandler = async (event) => {
 			await updateStackSource(updated.stackName, existing.environmentId, {
 				secretProviderId: data.secretProviderId ?? null
 			});
+		}
+
+		// Stored before any deploy below: every compose command reads the selection from here.
+		if (profileSelection?.ok) {
+			await setStackProfiles(data.stackName || existing.stackName, existing.environmentId, profileSelection.profiles);
 		}
 
 		// Register or unregister schedule with croner

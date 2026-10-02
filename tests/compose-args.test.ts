@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildComposeOperationArgs, shouldRunSeparateBuildStep } from '../src/lib/server/compose-args';
+import { buildComposeOperationArgs, shouldRunSeparateBuildStep, composeProfilesForOperation } from '../src/lib/server/compose-args';
 
 describe('buildComposeOperationArgs', () => {
 	it('plain up: no --build, no --no-cache (back-compat, the common case)', () => {
@@ -65,5 +65,34 @@ describe('shouldRunSeparateBuildStep', () => {
 		expect(shouldRunSeparateBuildStep(true, false, 'socket')).toBe(false);
 		expect(shouldRunSeparateBuildStep(false, false, 'socket')).toBe(false);
 		expect(shouldRunSeparateBuildStep(undefined, undefined, 'socket')).toBe(false);
+	});
+});
+
+describe('composeProfilesForOperation', () => {
+	it('an unmanaged stack (null) never gets profiles, whatever the command', () => {
+		for (const op of ['up', 'pull', 'build', 'stop', 'start', 'restart', 'down'] as const) {
+			expect(composeProfilesForOperation(op, null)).toEqual([]);
+			expect(composeProfilesForOperation(op, undefined)).toEqual([]);
+		}
+	});
+
+	it('up, pull and build run with exactly the selection', () => {
+		for (const op of ['up', 'pull', 'build'] as const) {
+			expect(composeProfilesForOperation(op, ['cron', 'mcp'])).toEqual(['cron', 'mcp']);
+			expect(composeProfilesForOperation(op, [])).toEqual([]);
+		}
+	});
+
+	it('stop, start, restart and down address every profile, so no container is left behind', () => {
+		for (const op of ['stop', 'start', 'restart', 'down'] as const) {
+			expect(composeProfilesForOperation(op, ['cron'])).toEqual(['*']);
+			// Managed with nothing selected still has to reach a previously deployed profile.
+			expect(composeProfilesForOperation(op, [])).toEqual(['*']);
+		}
+	});
+
+	it('returns a copy, not the stored array', () => {
+		const selection = ['cron'];
+		expect(composeProfilesForOperation('up', selection)).not.toBe(selection);
 	});
 });

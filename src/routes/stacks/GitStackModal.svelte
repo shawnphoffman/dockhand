@@ -19,6 +19,8 @@
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import StackEnvVarsPanel from '$lib/components/StackEnvVarsPanel.svelte';
 	import SecretProviderPicker from '$lib/components/SecretProviderPicker.svelte';
+	import ComposeProfilesPicker from './ComposeProfilesPicker.svelte';
+	import { COMPOSE_PROFILES_VAR, parseComposeProfilesEnv } from '$lib/utils/compose-profiles';
 	import BranchCombobox from './BranchCombobox.svelte';
 	import IconPickerModal from './IconPickerModal.svelte';
 	import ComposeOutputModal from './ComposeOutputModal.svelte';
@@ -245,6 +247,8 @@
 	type SecretProviderOption = { id: number; name: string; type: string };
 	let secretProviders = $state<SecretProviderOption[]>([]);
 	let formSecretProviderId = $state<number | null>(null);
+	let formProfiles = $state<string[]>([]);
+	let declaredProfiles = $state<string[]>([]);
 	let injectedSecretKeys = $state<string[]>([]);
 
 	// Environment variables state
@@ -541,6 +545,8 @@
 		envVars = [];
 		fileEnvVars = {};
 		existingSecretKeys = new Set();
+		formProfiles = [];
+		declaredProfiles = [];
 
 		if (gitStack) {
 			formRepoMode = 'existing';
@@ -563,6 +569,7 @@
 
 			// Load secret provider binding
 			loadSecretProviderBindingForStack(gitStack.stackName);
+			loadProfilesForStack(gitStack.stackName);
 			// Per-stack branch override; null means "use the repository default"
 			formBranch = gitStack.branch ?? null;
 
@@ -602,6 +609,20 @@
 			formForceRedeploy = false;
 			formDeployNow = false;
 			formSecretProviderId = null;
+		}
+	}
+
+	// Compose profiles. The declared list comes from the stack's synced compose file,
+	// so it is empty (and "unknown") until the first sync - names can be typed instead.
+	async function loadProfilesForStack(stackName: string) {
+		try {
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/profiles`, effectiveEnvId));
+			if (!response.ok) return;
+			const data = await response.json();
+			formProfiles = Array.isArray(data.profiles) ? data.profiles : [];
+			declaredProfiles = Array.isArray(data.declared) ? data.declared : [];
+		} catch (e) {
+			console.warn('Failed to load compose profiles for git stack:', e);
 		}
 	}
 
@@ -734,6 +755,7 @@
 				forceRedeploy: formForceRedeploy,
 				deployNow: deployAfterSave,
 				secretProviderId: formSecretProviderId,
+				profiles: formProfiles,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
 					value: v.value,
@@ -1502,6 +1524,14 @@
 					bind:secretProviderId={formSecretProviderId}
 					bind:envVars
 					providers={secretProviders}
+				/>
+				<ComposeProfilesPicker
+					declared={declaredProfiles}
+					bind:selected={formProfiles}
+					envProfiles={parseComposeProfilesEnv(envVars.find((v) => v.key.trim() === COMPOSE_PROFILES_VAR)?.value)}
+					disabled={formSaving}
+					allowCustom
+					declaredKnown={declaredProfiles.length > 0}
 				/>
 				<StackEnvVarsPanel
 					bind:variables={envVars}
