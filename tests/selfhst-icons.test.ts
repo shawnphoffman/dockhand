@@ -1,5 +1,5 @@
 // @ts-expect-error -- bun:test is a runtime built-in with no types installed
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync, statSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -13,7 +13,46 @@ import {
 } from '../src/lib/server/selfhst-icons';
 import { looksLikeImage } from '../src/lib/server/stack-icons';
 
+/**
+ * Gives the enclosing describe block its own temp DATA_DIR (and optionally a fetch
+ * stub). The dir lives for the whole block; DATA_DIR and fetch are switched around
+ * EACH test and put back afterwards.
+ *
+ * The switch must be per test, not beforeAll/afterAll: Bun runs every describe block's
+ * beforeAll up front, so with two blocks the first one's afterAll fires before the
+ * second one's tests. An afterAll that clears DATA_DIR therefore left the second block
+ * writing its cache files into the real ./data/icon-cache, where they survived the run
+ * and broke the next one. The previous value is restored rather than deleted, since
+ * DATA_DIR is process-global and other test files read it too.
+ */
+function useTempDataDir(prefix: string, fetchStub?: typeof globalThis.fetch): void {
+	let dir: string;
+	let previousDataDir: string | undefined;
+	let realFetch: typeof globalThis.fetch;
+	beforeAll(() => {
+		dir = mkdtempSync(join(tmpdir(), prefix));
+	});
+	afterAll(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+	beforeEach(() => {
+		previousDataDir = process.env.DATA_DIR;
+		process.env.DATA_DIR = dir;
+		realFetch = globalThis.fetch;
+		if (fetchStub) globalThis.fetch = fetchStub;
+	});
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+		if (previousDataDir === undefined) delete process.env.DATA_DIR;
+		else process.env.DATA_DIR = previousDataDir;
+	});
+}
+
 describe('isValidSelfhstRef', () => {
+	// selfhstCachePath creates the cache dir it resolves, so even these path-only tests
+	// need a temp DATA_DIR to stay out of ./data.
+	useTempDataDir('selfhst-ref-');
+
 	test('accepts normal references', () => {
 		for (const r of ['plex', 'jellyfin', 'home-assistant', 'pihole', 'nextcloud', '2fauth']) {
 			expect(isValidSelfhstRef(r)).toBe(true);
@@ -109,20 +148,8 @@ describe('looksLikeImage (upload magic-byte check)', () => {
 // budget, so any slow/blocked CDN would time the suite out - the fetch is not the SUT
 // here, the cache read is).
 describe('getSelfhstIcon cache-hit handling', () => {
-	let dir: string;
-	let realFetch: typeof globalThis.fetch;
-	beforeAll(() => {
-		dir = mkdtempSync(join(tmpdir(), 'selfhst-cache-'));
-		process.env.DATA_DIR = dir;
-		realFetch = globalThis.fetch;
-		// Every fall-through fetch is a deterministic miss - no network, no timeout race.
-		globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof globalThis.fetch;
-	});
-	afterAll(() => {
-		globalThis.fetch = realFetch;
-		delete process.env.DATA_DIR;
-		rmSync(dir, { recursive: true, force: true });
-	});
+	// Every fall-through fetch is a deterministic miss - no network, no timeout race.
+	useTempDataDir('selfhst-cache-', (async () => new Response(null, { status: 404 })) as typeof globalThis.fetch);
 
 	test('serves a valid cached SVG without refetching', async () => {
 		const p = selfhstCachePath('plex');
@@ -203,18 +230,8 @@ describe('getSelfhstIcon cache-hit handling', () => {
 // validation, verbatim raster caching, and the svg-first short-circuit - none of which the
 // cache-HIT tests above reach.
 describe('getSelfhstIcon fetch fallback', () => {
-	let dir: string;
-	let realFetch: typeof globalThis.fetch;
-	beforeAll(() => {
-		dir = mkdtempSync(join(tmpdir(), 'selfhst-fetch-'));
-		process.env.DATA_DIR = dir;
-		realFetch = globalThis.fetch;
-	});
-	afterAll(() => {
-		globalThis.fetch = realFetch;
-		delete process.env.DATA_DIR;
-		rmSync(dir, { recursive: true, force: true });
-	});
+	// Each test installs its own fetch stub; the helper puts the real one back afterwards.
+	useTempDataDir('selfhst-fetch-');
 
 	test('svg 404 falls through to a webp 200 and caches it verbatim as image/webp', async () => {
 		const ref = 'raster-only';
